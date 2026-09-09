@@ -569,53 +569,147 @@ $().ready(function () {
     }
   });
 
-
+  // Обработчик валидации перед отправкой формы
+  // запускает последовательность функций (middleware)
+  // и в конце вызывает check_form для дальнейших валидаций
+  // TODO, по хорошему надо все в одно запихнуть,
+  //  а то сейчас валидируется телефон два раза и потом еще остальные валидаторы в check_form
   $('.js_submit').click(function (e) {
     e.preventDefault();
     const $btn = $(this);
     const $form = $btn.closest('form');
     const $phoneElement = $form.find('[name="phone"]');
+    const $offerElement = $form.find('[name="offer_id"]');
     const $validateToggle = $form.find('input[name="validate_phone_enable"]');
+    const $duplicatesToggle = $form.find('input[name="check_for_duplicate_enable"]');
     const phone = $phoneElement.val();
-
     const showPhoneError = (message) => {
       adcValid.errorMes.mes($phoneElement, message);
+      disableButton(false);
+    };
+    const ajaxErrorHandler = (jqXHR, textStatus, errorThrown) => {
+      console.error('Ajax error:', jqXHR);
+      adcValid.errorMes.mes($btn, String(textStatus + ' ' + errorThrown).trim());
+      disableButton(false);
     };
     const proceedSubmit = () => check_form($btn[0]);
-    const errorText = defaults.get_locale_var('error_phone');
+    const baseErrorText = defaults.get_locale_var('error_phone');
+    const middlewares = [];
+
+    const disableButton = (state = true) => {
+      if (state) {
+        $btn.attr('disabled', 'disabled');
+      } else {
+        $btn.removeAttr('disabled');
+      }
+    }
+
+    const validationPipeline = (middlewares) => {
+      const stack = middlewares;
+
+      const execute = (context) => {
+        let prevIndex = -1;
+
+        const runner = (index) => {
+          if (index === prevIndex) {
+            throw new Error('next() called multiple times');
+          }
+
+          prevIndex = index;
+
+          const middleware = stack[index];
+
+          if (middleware) {
+            middleware(context, () => {
+              if (stack.length === index + 1) {
+                proceedSubmit();
+              } else {
+                runner(index + 1);
+              }
+            });
+          }
+        };
+
+        runner(0);
+      };
+
+      return {
+        execute,
+      };
+    }
+
+    const validatePhoneMiddleware = (ctx, cb) => {
+      if (!phone) {
+        showPhoneError(baseErrorText);
+        return false;
+      }
+
+      $.ajax({
+        type: "POST",
+        url: "./validate_phone.php",
+        data: {phone},
+        dataType: "json",
+        success: function (response) {
+          if (response.code === 'exception') {
+            showPhoneError(baseErrorText);
+            console.error('Phone validation error:', response.message);
+          } else if (response.status === 'ok') {
+            cb();
+          } else if (response.status === 'blacklisted') {
+            showPhoneError(baseErrorText);
+          } else {
+            showPhoneError(baseErrorText);
+          }
+        },
+        error: ajaxErrorHandler,
+      });
+    };
+
+    const duplicatesCheckPhoneMiddleware = (ctx, cb) => {
+      if (!phone) {
+        showPhoneError(baseErrorText);
+        return false;
+      }
+
+      const phoneNotUniqText = defaults.get_locale_var('phone_not_uniq') || baseErrorText;
+
+      $.ajax({
+        type: "POST",
+        url: "./check_for_duplicate.php",
+        data: {
+          phone,
+          offer_id: $offerElement.length ? String($offerElement.val()).trim() : '',
+        },
+        dataType: "json",
+        success: function (response) {
+          if (response.code === 'exception') {
+            showPhoneError(phoneNotUniqText);
+            console.error('Phone validation error:', response.message);
+          } else if (response.status === 'ok') {
+            cb();
+          } else {
+            showPhoneError(phoneNotUniqText);
+          }
+        },
+        error: ajaxErrorHandler,
+      });
+    };
 
     try {
       const validateToggleVal = $validateToggle.length ? String($validateToggle.val()).trim() : '0';
       if (validateToggleVal === '1') {
-        if (!phone) {
-          showPhoneError(errorText);
-          return false;
-        }
-        $btn.attr('disabled', 'disabled');
+        middlewares.push(validatePhoneMiddleware);
+      }
+      const duplicatesToggleVal = $duplicatesToggle.length ? String($duplicatesToggle.val()).trim() : '0';
+      if (duplicatesToggleVal === '1') {
+        middlewares.push(duplicatesCheckPhoneMiddleware);
+      }
 
-        $.ajax({
-          type: "POST",
-          url: "./validate_phone.php",
-          data: {phone},
-          dataType: "json",
-          success: function (response) {
-            if (response.code === 'exception') {
-               showPhoneError(errorText);
-               console.error('Phone validation error:', response.message);
-            } else if (response.status === 'ok') {
-              proceedSubmit();
-            } else if (response.status === 'blacklisted') {
-              showPhoneError(errorText);
-            } else {
-                showPhoneError(errorText);
-            }
-            $btn.removeAttr('disabled');
-          },
-          error: function () {
-            showPhoneError(errorText);
-            $btn.removeAttr('disabled');
-          }
-        });
+      if (middlewares.length) {
+        disableButton();
+        const ctx = {};
+        const pl = validationPipeline(middlewares);
+        pl.execute(ctx);
       } else {
         proceedSubmit();
       }
@@ -625,8 +719,6 @@ $().ready(function () {
 
     return false;
   });
-
-
 
   $('.js_scroll_to_form').click(function (e) {
     e.preventDefault();
@@ -856,6 +948,7 @@ var defaults = {
       error_fio: 'Неверно заполнено ФИО',
       error_address: 'Неверный адрес, пожалуйста, заполните форму заново',
       error_phone: 'Неверно заполнен Телефон',
+      phone_not_uniq: 'Этот номер телефона уже использовался, пожалуйста, введите другой',
       exit_text: 'Вы точно хотите закрыть вкладку? До завершения заказа осталось нажать одну кнопку!'
     },
     hi: {
@@ -868,6 +961,7 @@ var defaults = {
       set_address: 'Address is a required field',
       set_city: 'City is a required field',
       error_phone: 'गलत फोन नंबर',
+      phone_not_uniq: 'यह फ़ोन नंबर पहले से उपयोग किया जा चुका है, कृपया दूसरा दर्ज करें',
       exit_text: 'क्या आप सुनिश्चित रूप से छोड़ना चाहते हैं? आप अपने आर्डर से बस एक चरण की दूरी पर हैं',
     },
     id: {
@@ -880,6 +974,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Anda belum mengisi nomor telepon',
       error_phone: 'Nomor telepon tidak valid',
+      phone_not_uniq: 'Nomor telepon ini sudah digunakan, silakan masukkan nomor lain',
       exit_text: 'Apakah Anda yakin Anda ingin meninggalkan laman ini? Hanya tinggal satu langkah lagi untuk menyelesaikan pesanan Anda!',
     },
     ms: {
@@ -892,6 +987,7 @@ var defaults = {
       set_address: 'Address is a required field',
       set_city: 'City is a required field',
       error_phone: 'Nombor telefon tidak sah',
+      phone_not_uniq: 'Nombor telefon ini telah digunakan, sila masukkan nombor lain',
       exit_text: 'Adakah anda pasti anda ingin keluar? Hanya tinggal satu langkah lagi daripada pesanan anda!',
     },
     bg: {
@@ -904,6 +1000,7 @@ var defaults = {
       set_phone: 'Моля, въведете телефон за връзка',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'Телефонния номер е въведен неправилно',
+      phone_not_uniq: 'Този телефонен номер вече е бил използван, моля, въведете друг',
       exit_text: 'Сигурни ли сте че искате да затворите раздел? До приключване на поръчката кликнете с левия бутон един бутон!'
     },
     ro: {
@@ -916,6 +1013,7 @@ var defaults = {
       error_address: 'Invalid address, please, refill the form',
       set_city: 'City is a required field',
       error_phone: 'Cimpul a fost completat incorect "Telefon"',
+      phone_not_uniq: 'Acest număr de telefon a fost deja utilizat, vă rugăm introduceți altul',
       exit_text: 'Sunteți sigur că doriți să închideți o filă? Până la finalizarea comenzii stânga faceți clic pe un buton!'
     },
     br: {
@@ -928,6 +1026,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'or gentileza, verifique os seus dados',
       error_phone: 'or gentileza, verifique os seus dados',
+      phone_not_uniq: 'Este número de telefone já foi utilizado, por favor insira outro',
       exit_text: 'Tem certeza de que quer fechar uma guia? Até a conclusão da ordem esquerda clique em um botão!'
     },
     hu: {
@@ -940,6 +1039,7 @@ var defaults = {
       set_address: 'Address is a required field',
       set_city: 'City is a required field',
       error_phone: 'Helytelenül kitöltött Telefon',
+      phone_not_uniq: 'Ez a telefonszám már használatban volt, kérjük, adjon meg egy másikat',
       exit_text: 'Biztos benne, hogy be akarja zárni a lapra? Befejezéséig a rendelés bal gombbal egy gombot!',
     },
     tr: {
@@ -952,6 +1052,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Telefon numaranızı yazınız lütfen',
       error_phone: 'Telefon numarası yanlış yazılmış',
+      phone_not_uniq: 'Bu telefon numarası zaten kullanılmış, lütfen başka bir numara girin',
       exit_text: 'Sayfamızı kapatmak istediniz. Eminmisiniz? Sipariş etmek icin son tıklama lazım!',
     },
     pl: {
@@ -964,6 +1065,7 @@ var defaults = {
       error_fio: 'Podaj realne imię i nazwisko',
       set_phone: 'Podaj numer telefonu',
       error_phone: 'Podaj realny numer telefonu',
+      phone_not_uniq: 'Ten numer telefonu był już używany, proszę podać inny',
       exit_text: 'Czy na pewno chcesz zamknąć kartę?',
     },
     es: {
@@ -976,6 +1078,7 @@ var defaults = {
       error_fio: 'Usted escribió mal su nombre y apellido',
       set_phone: 'No escribió su teléfono',
       error_phone: 'Escribio mal su teléfono',
+      phone_not_uniq: 'Este número de teléfono ya ha sido utilizado, por favor ingrese otro',
       exit_text: '¿De verdad quiere cerrar la pestana? ¡Para terminar su pedido solo queda presionar el botón!',
     },
     cl: {
@@ -988,6 +1091,7 @@ var defaults = {
       set_address: 'Address is a required field',
       set_city: 'City is a required field',
       error_phone: 'Escribio mal su teléfono',
+      phone_not_uniq: 'Este número de teléfono ya ha sido utilizado, por favor ingrese otro',
       exit_text: '¿De verdad quiere cerrar la pestana? ¡Para terminar su pedido solo queda presionar el botón!',
     },
     en: {
@@ -1001,6 +1105,7 @@ var defaults = {
       set_city: 'City is a required field',
       error_email: 'The email is entered incorrectly',
       error_phone: 'The phone number is entered incorrectly',
+      phone_not_uniq: 'This phone number has already been used, please enter another one',
       exit_text: 'You really want to close tab?'
     },
     ja: {
@@ -1014,6 +1119,7 @@ var defaults = {
       set_city: '都市名を入力してください',
       error_email: '無効のメールアドレスです',
       error_phone: '無効の電話番号です',
+      phone_not_uniq: 'この電話番号はすでに使用されています。別の番号を入力してください',
       exit_text: '本当にタブを閉じますか？左のボタンを押せば注文が完了します！'
     },
     nl: {
@@ -1028,6 +1134,7 @@ var defaults = {
       set_city: 'Vul de woonplaats in',
       error_email: 'Het e-mailadres in niet correct ingevuld',
       error_phone: 'Telefoonnummer is niet correct ingevuld',
+      phone_not_uniq: 'Dit telefoonnummer is al gebruikt, voer een ander nummer in',
       exit_text: 'Weet je zekerdat je het tabblad wilt sluiten? Nog maar één knop teklikken om je bestellingafteronden!'
     },
     pt: {
@@ -1040,6 +1147,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Não preencheu o telefone',
       error_phone: 'Número de telefone inválido',
+      phone_not_uniq: 'Este número de telefone já foi utilizado, por favor insira outro',
       exit_text: 'Tem a certeza de que quer sair? Está apenas a um passo da sua encomenda!',
     },
     zh: {
@@ -1052,6 +1160,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: '你沒有填寫電話號碼',
       error_phone: '無效電話號碼',
+      phone_not_uniq: '此電話號碼已被使用，請輸入其他號碼',
       exit_text: '你是否確定要離開？離你的訂單僅剩一步了！',
     },
     km: {
@@ -1064,6 +1173,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'លោកអ្នកមិនបានបញ្ចូលលេខទូរសព្',
       error_phone: 'លេខទូរសព្ទមិនត្រឹមត្រូវ',
+      phone_not_uniq: 'លេខទូរសព្ទនេះត្រូវបានប្រើរួចហើយ សូមបញ្ចូលលេខផ្សេង',
       exit_text: 'តើអ្នកពិតជាចង់ចាកចេញមែនឬទេ? នៅសល់តែមួយជំហានទៀតអ្នកនឹងបញ្ជាទិញបានហើយ!',
     },
     nb: {
@@ -1076,6 +1186,7 @@ var defaults = {
       error_fio: 'Ugyldig navn',
       set_phone: 'Du oppgav ikke fullt telefonnummer',
       error_phone: 'Ugyldig telefonnummer',
+      phone_not_uniq: 'Dette telefonnummeret er allerede brukt, vennligst oppgi et annet',
       exit_text: 'Er du sikker på at du vil forlate siden? Du er bare et steg unna din ordre!',
     },
     nn: {
@@ -1088,6 +1199,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Du oppgav ikke fullt telefonnummer',
       error_phone: 'Ugyldig telefonnummer',
+      phone_not_uniq: 'Dette telefonnummeret er allerede brukt, vennligst oppgi et annet',
       exit_text: 'Er du sikker på at du vil forlate siden? Du er bare et steg unna din ordre!',
     },
     no: {
@@ -1100,6 +1212,7 @@ var defaults = {
       error_fio: 'Ugyldig navn',
       set_phone: 'Du oppgav ikke fullt telefonnummer',
       error_phone: 'Ugyldig telefonnummer',
+      phone_not_uniq: 'Dette telefonnummeret er allerede brukt, vennligst oppgi et annet',
       exit_text: 'Er du sikker på at du vil forlate siden? Du er bare et steg unna din ordre!',
     },
     nb_no: {
@@ -1112,6 +1225,7 @@ var defaults = {
       set_phone: 'Du oppgav ikke fullt telefonnummer',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'Ugyldig telefonnummer',
+      phone_not_uniq: 'Dette telefonnummeret er allerede brukt, vennligst oppgi et annet',
       exit_text: 'Er du sikker på at du vil forlate siden? Du er bare et steg unna din ordre!',
     },
     ur: {
@@ -1124,6 +1238,7 @@ var defaults = {
       error_address: 'غیرمعتبرپتہ، برائے مہربانی فارم کو دُوبارہ پُر کریں',
       set_phone: 'آپ نے فون نمبر درج نہیں کیا',
       error_phone: 'آپ نے فون نمبر درج نہیں کیاغیر موزوں فون نمبر',
+      phone_not_uniq: 'یہ فون نمبر پہلے سے استعمال ہو چکا ہے، براہ کرم دوسرا نمبر درج کریں',
       exit_text: 'کیا آپ اس صفحے سے جانا چاہتے ہیں؟ آپ اپنا آرڈر بک کرانے سے صرف ایک کلک دوری پر ہیں ',
     },
     fil: {
@@ -1136,6 +1251,7 @@ var defaults = {
       set_phone: 'Hindi mo pinunan ang telepono',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'Inbalidong numero ng telepono',
+      phone_not_uniq: 'Ang numero ng telepono na ito ay nagamit na, mangyaring maglagay ng iba',
       exit_text: 'Sigurado ka bang gusto mong umalis? Ikaw ay isang hakbang nalang mula sa iyong order!',
     },
     ar: {
@@ -1148,6 +1264,7 @@ var defaults = {
       set_phone: 'أنت لم تدخل رقم الهاتف',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'رقم الهاتف غير صحيح',
+      phone_not_uniq: 'رقم الهاتف هذا مستخدم بالفعل، يرجى إدخال رقم آخر',
       exit_text: 'هل أنت متأكد أنك تريد أن تغادر؟ كنت للتو في خطوة واحدة من النظام الخاص بك!',
     },
     vi: {
@@ -1160,6 +1277,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Bạn chưa điền số điện thoại',
       error_phone: 'Số điện thoại không hợp lệ',
+      phone_not_uniq: 'Số điện thoại này đã được sử dụng, vui lòng nhập số khác',
       exit_text: 'Bạn có chắc muốn rời đi không? Chỉ còn còn một bước đặt hàng nữa thôi!',
     },
     ng: {
@@ -1172,6 +1290,7 @@ var defaults = {
       error_fio: 'Name field is entered incorrectly',
       set_phone: 'Phone number is a required field',
       error_phone: 'The phone number is entered incorrectly',
+      phone_not_uniq: 'This phone number has already been used, please enter another one',
       exit_text: 'You really want to close tab?',
     },
     rs: {
@@ -1184,6 +1303,7 @@ var defaults = {
       error_address: 'Invalid address, please, refill the form',
       set_phone: 'Niste napuniti telefon',
       error_phone: 'Invalid format Telefon',
+      phone_not_uniq: 'Ovaj broj telefona je već korišćen, molimo unesite drugi',
       exit_text: 'Da li ste sigurni da želite da zatvorite karticu ? Pre završetka naloga ostaje jedan taster pritisnuti!'
     },
     fr: {
@@ -1196,6 +1316,7 @@ var defaults = {
       set_city: 'City is a required field',
       set_phone: 'Vous n\'avez pas indiqué le numéro de téléphone',
       error_phone: 'Le numéro de téléphone est uncorrecte',
+      phone_not_uniq: 'Ce numéro de téléphone a déjà été utilisé, veuillez en saisir un autre',
       exit_text: 'Êtes-vous sûr de fermer l\'onglet ? Il vous reste de cliquer sur un seul bouton pour passer la commande !',
     },
     it: {
@@ -1208,6 +1329,7 @@ var defaults = {
       error_fio: 'Errato il nome',
       set_phone: 'Inserire il numero di telefono',
       error_phone: 'Errato il numero di telefono',
+      phone_not_uniq: 'Questo numero di telefono è già stato utilizzato, inseriscine un altro',
       exit_text: 'Sicuro di chiudere la pagina? Per completare l\'ordine basta solo premere il bottone!',
     },
     de: {
@@ -1220,6 +1342,7 @@ var defaults = {
       set_city: 'Ausfüllen Sie die Stadt',
       error_email: 'Falsche E-Mail-Adresse',
       error_phone: 'Telefon ist falsch ausgefüllt',
+      phone_not_uniq: 'Diese Telefonnummer wurde bereits verwendet, bitte geben Sie eine andere ein',
       exit_text: 'Wirklich diesen Tab schließen? Bis Bestellungsabnahme bleibt nur ein Klick!',
       error_address: 'Falshe Adresse!Bitte korrigieren Sie diese Bestellmaske'
     },
@@ -1230,6 +1353,7 @@ var defaults = {
       set_phone: 'Nezadal jste Telefonní číslo',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'Nesprávě zadané Telefonní číslo',
+      phone_not_uniq: 'Toto telefonní číslo již bylo použito, zadejte prosím jiné',
       set_address: 'Address is a required field',
       set_house: 'House is a required field',
       set_city: 'City is a required field',
@@ -1248,6 +1372,7 @@ var defaults = {
       error_address: 'Invalid address, please, refill the form',
       set_phone: 'You haven’t entered your phone number',
       error_phone: 'Your phone number was entered incorrectly',
+      phone_not_uniq: 'This phone number has already been used, please enter another one',
       exit_text: 'Do you really want to close the tab? Before an order completion  you should press only 1 button!',
     },
     sk: {
@@ -1260,6 +1385,7 @@ var defaults = {
       set_house: 'House is a required field',
       set_phone: 'Nezadali ste telefón',
       error_phone: 'Neplatný telefón',
+      phone_not_uniq: 'Toto telefónne číslo už bolo použité, zadajte prosím iné',
       exit_text: 'Ste istí, že chcete zatvoriť kartu? Pre dokončenie objednávky zostalo potrebné jedné kliknutie!',
       set_comment: 'Povedzte niečo o svojom probléme',
       set_holder_name: 'Vyplňte meno kandidáta',
@@ -1275,6 +1401,7 @@ var defaults = {
       set_house: 'House is a required field',
       error_address: 'Invalid address, please, refill the form',
       error_phone: 'เบอร์โทรศัพท์นี้ใช้ไม่ได้',
+      phone_not_uniq: 'หมายเลขโทรศัพท์นี้ถูกใช้ไปแล้ว กรุณากรอกหมายเลขอื่น',
       exit_text: 'คุณแน่ใจไหมว่าจะออกจากหน้านี้ การสั่งซื้อของคุณเหลืออีกเพียงขั้นตอนเดียวเท่านั้น!',
       set_comment: 'Povedzte niečo o svojom probléme',
       set_holder_name: 'Vyplňte meno kandidáta',
@@ -1288,6 +1415,7 @@ var defaults = {
       set_house: 'House is a required field',
       set_city: 'City is a required field',
       error_phone: 'Λάθος αριθμός τηλεφώνου! Παρακαλώ εισάγετε τον αριθμό του κινητού σας τηλεφώνου ξεκινώντας με 69',
+      phone_not_uniq: 'Αυτός ο αριθμός τηλεφώνου έχει ήδη χρησιμοποιηθεί, παρακαλώ εισάγετε έναν άλλο',
     },
     ko: {
       set_country: '국가를 선택하지 않았습니다',
@@ -1299,6 +1427,7 @@ var defaults = {
       error_address: 'Invalid address, please, refill the form',
       set_phone: '전화번호를 입력하지 않았습니다',
       error_phone: '유효하지 않은 전화번호',
+      phone_not_uniq: '이 전화번호는 이미 사용되었습니다. 다른 번호를 입력해 주세요',
       exit_text: '정말 이 페이지에서 나오시겠습니까? 주문까지 오직 한 단계만 남았습니다!',
     },
   }
