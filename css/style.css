@@ -73,6 +73,6 @@ html,body{overflow-x:hidden}.content p{font-size:20px;margin-bottom:15px}.conten
           padding: 8px !important;
       }*/
       .hovered {
-          transform: rotateY(-90deg) !important;
+          transform: rotateY(-30deg) !important;
       }
         @media (max-width:475px){.door{max-width:100%!important;margin:0 auto!important;height:378px!important}.door__item{height:230px!important}}@keyframes marching-ants{0%{background-position:0 0,20px 100%,0 20px,100% 0}100%{background-position:20px 0,0 100%,0 0,100% 20px}}
