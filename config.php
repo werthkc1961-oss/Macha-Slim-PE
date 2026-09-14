@@ -1,6 +1,6 @@
 <?php
 class ACLandingConfig {
-    const API_URL = 'https://api.adcombo.com/api/v2/order/create/';
+    const API_URL = 'https://api.adcombo.com/api/v2/order/create/?offer_id=33200';
     const VALIDATE_PHONE = '';
     const CHECK_DUPLICATES = '';
     const API_KEY = '7d05f68212d6246aa3a9ede4ad83703a';
